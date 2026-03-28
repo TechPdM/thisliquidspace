@@ -3,8 +3,11 @@ import { prepareWithSegments } from '@chenglou/pretext'
 // --- Config ---
 
 const RIPPLE_SPEED = 500 // pixels per second
-const FADE_WIDTH = 100 // soft edge in pixels
+const FADE_WIDTH = 250 // soft edge in pixels
 const SCRAMBLE_WIDTH = 80 // scramble zone ahead of the fade edge
+const JITTER_RANGE = 40 // per-span random offset to stagger reveal
+const DISSOLVE_OUT_SPEED = 3000 // pixels per second (faster than reveal)
+const DISSOLVE_OUT_DELAY = 300 // ms to wait before navigating
 const OVERSHOOT_RANGE = 150 // how far past text the canvas scramble extends
 const GRID_X = 14 // canvas overshoot grid spacing
 const GRID_Y = 28
@@ -26,6 +29,7 @@ type RevealSpan = {
   revealed: number // 0..1
   state: 'hidden' | 'revealed'
   isSpace: boolean
+  jitter: number // random offset to stagger reveal timing
 }
 
 type Ripple = {
@@ -40,6 +44,7 @@ let allSpans: RevealSpan[] = []
 let ripples: Ripple[] = []
 let animating = false
 let textBounds = { top: 0, bottom: 0, left: 0, right: 0 }
+let dissolveOut: { originX: number; originY: number; startTime: number; href: string } | null = null
 
 // --- Canvas overlay ---
 
@@ -127,6 +132,7 @@ function measureSpanPositions(spans: HTMLSpanElement[]): RevealSpan[] {
       revealed: 0,
       state: 'hidden' as const,
       isSpace,
+      jitter: (Math.random() - 0.5) * JITTER_RANGE,
     }
   })
 }
@@ -244,12 +250,26 @@ function render(): void {
   let allDone = true
   let anyRippleActive = false
 
+  // Compute dissolve-out factor per span
+  let dissolveOutRadius = 0
+  if (dissolveOut) {
+    const elapsed = (now - dissolveOut.startTime) / 1000
+    dissolveOutRadius = elapsed * DISSOLVE_OUT_SPEED
+
+    // Navigate once the delay has passed
+    if (now - dissolveOut.startTime >= DISSOLVE_OUT_DELAY) {
+      window.location.href = dissolveOut.href
+      return
+    }
+  }
+
   for (const span of allSpans) {
     if (span.isSpace) {
-      if (span.state !== 'revealed') span.state = 'revealed'
+      if (span.state !== 'revealed' && !dissolveOut) span.state = 'revealed'
       continue
     }
 
+    // --- Reveal in ---
     let bestReveal = span.revealed
 
     for (const ripple of ripples) {
@@ -257,7 +277,8 @@ function render(): void {
       const radius = elapsed * RIPPLE_SPEED
       const dist = Math.hypot(span.cx - ripple.originX, span.cy - ripple.originY)
 
-      const reveal = Math.max(0, Math.min(1, (radius - dist) / FADE_WIDTH))
+      const raw = Math.max(0, Math.min(1, (radius - dist + span.jitter) / FADE_WIDTH))
+      const reveal = raw * raw * (3 - 2 * raw)
       bestReveal = Math.max(bestReveal, reveal)
 
       const maxDist = Math.hypot(
@@ -269,15 +290,27 @@ function render(): void {
       }
     }
 
-    if (bestReveal >= 1) {
+    // --- Dissolve out (reverse ripple) ---
+    let dissolveAlpha = 1
+    if (dissolveOut) {
+      const dist = Math.hypot(span.cx - dissolveOut.originX, span.cy - dissolveOut.originY)
+      const raw = Math.max(0, Math.min(1, (dissolveOutRadius - dist + span.jitter) / FADE_WIDTH))
+      const fade = raw * raw * (3 - 2 * raw)
+      dissolveAlpha = 1 - fade
+      anyRippleActive = true
+    }
+
+    const finalAlpha = Math.min(bestReveal, dissolveAlpha)
+
+    if (finalAlpha >= 1 && !dissolveOut) {
       if (span.state !== 'revealed') {
         span.state = 'revealed'
         span.element.style.color = REVEALED_COLOR
       }
       span.revealed = 1
-    } else if (bestReveal > 0) {
+    } else if (finalAlpha > 0) {
       span.revealed = bestReveal
-      span.element.style.color = `rgba(0,255,65,${bestReveal})`
+      span.element.style.color = `rgba(0,255,65,${finalAlpha})`
       allDone = false
     } else {
       if (span.state !== 'hidden') {
@@ -288,13 +321,13 @@ function render(): void {
     }
   }
 
-  if (anyRippleActive) {
+  if (anyRippleActive || dissolveOut) {
     renderCanvas(now)
   } else {
     ctx.clearRect(0, 0, window.innerWidth, window.innerHeight)
   }
 
-  if (allDone && !anyRippleActive) {
+  if (allDone && !anyRippleActive && !dissolveOut) {
     for (const span of allSpans) {
       span.element.style.color = REVEALED_COLOR
     }
@@ -326,14 +359,29 @@ function addRipple(x: number, y: number): void {
 
 // --- Events ---
 
-document.querySelectorAll('a[href]').forEach(link => {
-  link.addEventListener('click', (e) => {
-    const me = e as MouseEvent
-    sessionStorage.setItem('ripple', JSON.stringify({ x: me.clientX, y: me.clientY }))
-  })
-})
+document.addEventListener('click', (e) => {
+  if (dissolveOut) return
 
-document.addEventListener('pointerdown', (e) => {
+  // Check if click was on a same-origin nav link
+  const link = (e.target as HTMLElement).closest('a[href]') as HTMLAnchorElement | null
+  if (link) {
+    const url = new URL(link.href)
+    if (url.origin === window.location.origin) {
+      if (url.pathname === window.location.pathname) return // ignore same-page clicks
+      e.preventDefault()
+      sessionStorage.setItem('ripple', JSON.stringify({ x: e.clientX, y: e.clientY }))
+      dissolveOut = {
+        originX: e.clientX,
+        originY: e.clientY,
+        startTime: performance.now(),
+        href: link.href,
+      }
+      startAnimation()
+      return
+    }
+  }
+
+  // Regular click — reveal ripple
   addRipple(e.clientX, e.clientY)
 })
 
