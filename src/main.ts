@@ -6,7 +6,7 @@ const RIPPLE_SPEED = 500 // pixels per second
 const FADE_WIDTH = 100 // soft edge in pixels
 const SCRAMBLE_WIDTH = 80 // scramble zone ahead of the fade edge
 const OVERSHOOT_RANGE = 150 // how far past text the canvas scramble extends
-const GRID_X = 14 // canvas scramble grid spacing
+const GRID_X = 14 // canvas overshoot grid spacing
 const GRID_Y = 28
 const REVEALED_COLOR = '#00ff41'
 const SCRAMBLE_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789@#$%&=+<>/?!~^*'
@@ -16,11 +16,15 @@ const SCRAMBLE_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789@#$%&=+<>/?!~^*'
 type RevealSpan = {
   element: HTMLSpanElement
   originalText: string
+  x: number // left edge
+  y: number // top edge
   cx: number
   cy: number
   width: number
+  height: number
+  font: string
   revealed: number // 0..1
-  state: 'hidden' | 'scramble' | 'revealed'
+  state: 'hidden' | 'revealed'
   isSpace: boolean
 }
 
@@ -39,9 +43,7 @@ let textBounds = { top: 0, bottom: 0, left: 0, right: 0 }
 
 // --- Canvas overlay ---
 
-const canvas = document.createElement('canvas')
-canvas.className = 'scramble-canvas'
-document.body.appendChild(canvas)
+const canvas = document.getElementById('scramble') as HTMLCanvasElement
 const ctx = canvas.getContext('2d')!
 
 function sizeCanvas(): void {
@@ -59,7 +61,7 @@ function randomChar(): string {
   return SCRAMBLE_CHARS[Math.floor(Math.random() * SCRAMBLE_CHARS.length)]!
 }
 
-function scrambleText(length: number): string {
+function scrambleString(length: number): string {
   let s = ''
   for (let i = 0; i < length; i++) s += randomChar()
   return s
@@ -110,16 +112,18 @@ function measureSpanPositions(spans: HTMLSpanElement[]): RevealSpan[] {
     const rect = span.getBoundingClientRect()
     const text = span.textContent!
     const isSpace = text.trim().length === 0
-    if (!isSpace) {
-      span.style.display = 'inline-block'
-      span.style.width = `${rect.width}px`
-    }
+    const style = getComputedStyle(span)
+    const font = `${style.fontStyle !== 'normal' ? style.fontStyle + ' ' : ''}${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
     return {
       element: span,
       originalText: text,
+      x: rect.left,
+      y: rect.top,
       cx: rect.left + rect.width / 2,
       cy: rect.top + rect.height / 2,
       width: rect.width,
+      height: rect.height,
+      font,
       revealed: 0,
       state: 'hidden' as const,
       isSpace,
@@ -167,23 +171,44 @@ function setup(): void {
 
 // --- Animation ---
 
-function isNearSpan(x: number, y: number): boolean {
-  for (const span of allSpans) {
-    if (span.isSpace) continue
-    if (Math.abs(x - span.cx) < span.width / 2 + 4 && Math.abs(y - span.cy) < GRID_Y / 2 + 2) {
-      return true
-    }
-  }
-  return false
-}
-
-function renderCanvasOvershoot(now: number): void {
+function renderCanvas(now: number): void {
   ctx.clearRect(0, 0, window.innerWidth, window.innerHeight)
-  ctx.font = '18px Georgia, serif'
-  ctx.textBaseline = 'top'
 
   const vw = window.innerWidth
   const vh = window.innerHeight
+
+  // Draw scramble text at span positions
+  for (const span of allSpans) {
+    if (span.isSpace || span.revealed >= 1) continue
+
+    let inScrambleZone = false
+    let bestScrambleAlpha = 0
+
+    for (const ripple of ripples) {
+      const elapsed = (now - ripple.startTime) / 1000
+      const radius = elapsed * RIPPLE_SPEED
+      const dist = Math.hypot(span.cx - ripple.originX, span.cy - ripple.originY)
+
+      if (dist < radius + SCRAMBLE_WIDTH && dist > radius - FADE_WIDTH * 0.3 && span.revealed < 0.5) {
+        inScrambleZone = true
+        const ringWidth = SCRAMBLE_WIDTH + FADE_WIDTH * 0.3
+        const ringPos = (dist - (radius - FADE_WIDTH * 0.3)) / ringWidth
+        const fade = ringPos < 0.5 ? ringPos * 2 : (1 - ringPos) * 2
+        bestScrambleAlpha = Math.max(bestScrambleAlpha, fade * (0.15 + Math.random() * 0.25))
+      }
+    }
+
+    if (inScrambleZone) {
+      ctx.font = span.font
+      ctx.textBaseline = 'top'
+      ctx.fillStyle = `rgba(0,255,65,${bestScrambleAlpha})`
+      ctx.fillText(scrambleString(span.originalText.length), span.x, span.y)
+    }
+  }
+
+  // Draw overshoot grid scramble
+  ctx.font = '18px Georgia, serif'
+  ctx.textBaseline = 'top'
 
   for (const ripple of ripples) {
     const elapsed = (now - ripple.startTime) / 1000
@@ -191,7 +216,6 @@ function renderCanvasOvershoot(now: number): void {
     const outerRadius = radius + SCRAMBLE_WIDTH + OVERSHOOT_RANGE
     const innerRadius = radius - FADE_WIDTH * 0.3
 
-    // Only iterate grid cells within the bounding box of the outer ring
     const minX = Math.max(0, Math.floor((ripple.originX - outerRadius) / GRID_X) * GRID_X)
     const maxX = Math.min(vw, Math.ceil((ripple.originX + outerRadius) / GRID_X) * GRID_X)
     const minY = Math.max(0, Math.floor((ripple.originY - outerRadius) / GRID_Y) * GRID_Y)
@@ -202,19 +226,10 @@ function renderCanvasOvershoot(now: number): void {
         const dist = Math.hypot(x - ripple.originX, y - ripple.originY)
         if (dist < innerRadius || dist > outerRadius) continue
 
-        // Skip cells that overlap with actual text spans
-        if (isNearSpan(x, y)) continue
-
-        // Fade based on distance from text content
-        const textDist = distFromTextBounds(x, y)
-        if (textDist > OVERSHOOT_RANGE) continue
-
-        const overshootFade = 1 - textDist / OVERSHOOT_RANGE
-        // Fade based on position in the scramble ring
         const ringPos = (dist - innerRadius) / (outerRadius - innerRadius)
         const ringFade = ringPos < 0.5 ? ringPos * 2 : (1 - ringPos) * 2
 
-        const alpha = overshootFade * ringFade * (0.1 + Math.random() * 0.2)
+        const alpha = ringFade * (0.1 + Math.random() * 0.25)
         if (alpha < 0.02) continue
 
         ctx.fillStyle = `rgba(0,255,65,${alpha})`
@@ -236,7 +251,6 @@ function render(): void {
     }
 
     let bestReveal = span.revealed
-    let inScrambleZone = false
 
     for (const ripple of ripples) {
       const elapsed = (now - ripple.startTime) / 1000
@@ -246,11 +260,6 @@ function render(): void {
       const reveal = Math.max(0, Math.min(1, (radius - dist) / FADE_WIDTH))
       bestReveal = Math.max(bestReveal, reveal)
 
-      if (dist < radius + SCRAMBLE_WIDTH && dist > radius - FADE_WIDTH * 0.3) {
-        inScrambleZone = true
-      }
-
-      // Check if this ripple can still reach any unrevealed content
       const maxDist = Math.hypot(
         Math.max(Math.abs(ripple.originX), Math.abs(window.innerWidth - ripple.originX)),
         Math.max(Math.abs(ripple.originY), Math.abs(window.innerHeight - ripple.originY)),
@@ -263,34 +272,24 @@ function render(): void {
     if (bestReveal >= 1) {
       if (span.state !== 'revealed') {
         span.state = 'revealed'
-        span.element.textContent = span.originalText
         span.element.style.color = REVEALED_COLOR
       }
       span.revealed = 1
     } else if (bestReveal > 0) {
-      span.state = 'scramble'
       span.revealed = bestReveal
-      span.element.textContent = span.originalText
       span.element.style.color = `rgba(0,255,65,${bestReveal})`
-      allDone = false
-    } else if (inScrambleZone) {
-      span.state = 'scramble'
-      span.element.textContent = scrambleText(span.originalText.length)
-      span.element.style.color = `rgba(0,255,65,${0.15 + Math.random() * 0.25})`
       allDone = false
     } else {
       if (span.state !== 'hidden') {
         span.state = 'hidden'
-        span.element.textContent = span.originalText
         span.element.style.color = 'transparent'
       }
       allDone = false
     }
   }
 
-  // Render canvas overshoot
   if (anyRippleActive) {
-    renderCanvasOvershoot(now)
+    renderCanvas(now)
   } else {
     ctx.clearRect(0, 0, window.innerWidth, window.innerHeight)
   }
@@ -298,10 +297,6 @@ function render(): void {
   if (allDone && !anyRippleActive) {
     for (const span of allSpans) {
       span.element.style.color = REVEALED_COLOR
-      if (!span.isSpace) {
-        span.element.style.display = ''
-        span.element.style.width = ''
-      }
     }
     canvas.style.display = 'none'
     animating = false
@@ -331,7 +326,6 @@ function addRipple(x: number, y: number): void {
 
 // --- Events ---
 
-// Capture click position on nav links before navigation
 document.querySelectorAll('a[href]').forEach(link => {
   link.addEventListener('click', (e) => {
     const me = e as MouseEvent
@@ -347,6 +341,8 @@ window.addEventListener('resize', () => {
   sizeCanvas()
   for (const span of allSpans) {
     const rect = span.element.getBoundingClientRect()
+    span.x = rect.left
+    span.y = rect.top
     span.cx = rect.left + rect.width / 2
     span.cy = rect.top + rect.height / 2
   }
@@ -357,7 +353,6 @@ window.addEventListener('resize', () => {
 
 setup()
 
-// If we arrived via a click (e.g. nav link), trigger ripple from that location
 const stored = sessionStorage.getItem('ripple')
 if (stored) {
   sessionStorage.removeItem('ripple')
