@@ -91,8 +91,20 @@ function wrapTextNodes(el: HTMLElement): HTMLSpanElement[] {
     const style = getComputedStyle(parent)
     const font = `${style.fontStyle !== 'normal' ? style.fontStyle + ' ' : ''}${style.fontWeight} ${style.fontSize} ${style.fontFamily}`
 
+    // Preserve leading/trailing whitespace that Pretext normalization strips
+    const hasLeadingSpace = /^\s/.test(text)
+    const hasTrailingSpace = /\s$/.test(text)
+
     const prepared = prepareWithSegments(text, font)
     const fragment = document.createDocumentFragment()
+
+    if (hasLeadingSpace && prepared.segments.length > 0 && !/^\s/.test(prepared.segments[0]!)) {
+      const spacer = document.createElement('span')
+      spacer.className = 'reveal-span'
+      spacer.textContent = ' '
+      fragment.appendChild(spacer)
+      spans.push(spacer)
+    }
 
     for (let i = 0; i < prepared.segments.length; i++) {
       const segText = prepared.segments[i]!
@@ -104,6 +116,14 @@ function wrapTextNodes(el: HTMLElement): HTMLSpanElement[] {
       span.textContent = segText
       fragment.appendChild(span)
       spans.push(span)
+    }
+
+    if (hasTrailingSpace && prepared.segments.length > 0 && !/\s$/.test(prepared.segments[prepared.segments.length - 1]!)) {
+      const spacer = document.createElement('span')
+      spacer.className = 'reveal-span'
+      spacer.textContent = ' '
+      fragment.appendChild(spacer)
+      spans.push(spacer)
     }
 
     textNode.replaceWith(fragment)
@@ -367,7 +387,10 @@ document.addEventListener('click', (e) => {
   if (link) {
     const url = new URL(link.href)
     if (url.origin === window.location.origin) {
-      if (url.pathname === window.location.pathname) return // ignore same-page clicks
+      if (url.pathname === window.location.pathname) {
+        e.preventDefault()
+        return
+      }
       e.preventDefault()
       sessionStorage.setItem('ripple', JSON.stringify({ x: e.clientX, y: e.clientY }))
       dissolveOut = {
