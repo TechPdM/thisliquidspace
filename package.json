@@ -1,0 +1,11 @@
+{
+  "name": "pretext-homepage",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun *.html --host=127.0.0.1:3001 --watch --no-clear-screen"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "file:../pretext"
+  }
+}
