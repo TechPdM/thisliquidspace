@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Blog — thisLiquidSpace</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@300;400;500;600&family=Silkscreen&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="./src/styles.css">
 </head>
 <body>
@@ -29,6 +32,20 @@
     <p>Text on a screen looks simple. Letters in a row, words in a line. But underneath, the browser is solving a constraint problem — balancing font metrics, Unicode segmentation rules, and the geometry of the container. Most of the time you never notice. That is the point. This is exactly what <a href="/projects">Pretext</a> is built to explore.</p>
   </main>
 
+  <div class="pickers">
+    <div class="theme-picker">
+      <button class="theme-swatch" data-swatch="matrix" aria-label="Matrix green theme"></button>
+      <button class="theme-swatch" data-swatch="amber" aria-label="Amber theme"></button>
+      <button class="theme-swatch" data-swatch="cyan" aria-label="Cyan theme"></button>
+      <button class="theme-swatch" data-swatch="bone" aria-label="Bone theme"></button>
+    </div>
+    <div class="font-picker">
+      <button class="font-swatch" data-font="serif">Se</button>
+      <button class="font-swatch" data-font="sans">Sa</button>
+      <button class="font-swatch" data-font="mono">Mo</button>
+      <button class="font-swatch" data-font="pixel">Px</button>
+    </div>
+  </div>
   <canvas id="scramble" class="scramble-canvas"></canvas>
   <script type="module" src="./src/main.ts"></script>
 </body>

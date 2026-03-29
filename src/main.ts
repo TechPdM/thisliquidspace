@@ -5,14 +5,29 @@ import { prepareWithSegments } from '@chenglou/pretext'
 const RIPPLE_SPEED = 500 // pixels per second
 const FADE_WIDTH = 250 // soft edge in pixels
 const SCRAMBLE_WIDTH = 80 // scramble zone ahead of the fade edge
-const JITTER_RANGE = 40 // per-span random offset to stagger reveal
+const JITTER_RANGE = 100 // per-span random offset to stagger reveal
+const WOBBLE_AMP = 60 // angle-based wavefront distortion amplitude
+const WOBBLE_FREQ = 3 // number of lobes in the wobble pattern
 const DISSOLVE_OUT_SPEED = 3000 // pixels per second (faster than reveal)
 const DISSOLVE_OUT_DELAY = 300 // ms to wait before navigating
 const OVERSHOOT_RANGE = 150 // how far past text the canvas scramble extends
 const GRID_X = 14 // canvas overshoot grid spacing
 const GRID_Y = 28
-const REVEALED_COLOR = '#00ff41'
 const SCRAMBLE_CHARS = 'abcdefghijklmnopqrstuvwxyz0123456789@#$%&=+<>/?!~^*'
+
+function getThemeColors() {
+  const style = getComputedStyle(document.documentElement)
+  return {
+    revealed: style.getPropertyValue('--fg').trim(),
+    rgb: style.getPropertyValue('--fg-rgb').trim(),
+  }
+}
+
+let theme = getThemeColors()
+
+function glowShadow(alpha: number = 0.15): string {
+  return `0 0 6px rgba(${theme.rgb},${alpha})`
+}
 
 // --- Types ---
 
@@ -30,6 +45,7 @@ type RevealSpan = {
   state: 'hidden' | 'revealed'
   isSpace: boolean
   jitter: number // random offset to stagger reveal timing
+  wobbleSeed: number // per-span angle offset for wavefront distortion
 }
 
 type Ripple = {
@@ -153,6 +169,7 @@ function measureSpanPositions(spans: HTMLSpanElement[]): RevealSpan[] {
       state: 'hidden' as const,
       isSpace,
       jitter: (Math.random() - 0.5) * JITTER_RANGE,
+      wobbleSeed: Math.random() * Math.PI * 2,
     }
   })
 }
@@ -213,21 +230,26 @@ function renderCanvas(now: number): void {
     for (const ripple of ripples) {
       const elapsed = (now - ripple.startTime) / 1000
       const radius = elapsed * RIPPLE_SPEED
-      const dist = Math.hypot(span.cx - ripple.originX, span.cy - ripple.originY)
+      const sdx = span.cx - ripple.originX
+      const sdy = span.cy - ripple.originY
+      const dist = Math.hypot(sdx, sdy)
+      const angle = Math.atan2(sdy, sdx)
+      const wobble = Math.sin(angle * WOBBLE_FREQ + span.wobbleSeed) * WOBBLE_AMP
+      const effectiveDist = dist - span.jitter - wobble
 
-      if (dist < radius + SCRAMBLE_WIDTH && dist > radius - FADE_WIDTH * 0.3 && span.revealed < 0.5) {
+      if (effectiveDist < radius + SCRAMBLE_WIDTH && effectiveDist > radius - FADE_WIDTH * 0.3 && span.revealed < 0.5) {
         inScrambleZone = true
         const ringWidth = SCRAMBLE_WIDTH + FADE_WIDTH * 0.3
-        const ringPos = (dist - (radius - FADE_WIDTH * 0.3)) / ringWidth
+        const ringPos = (effectiveDist - (radius - FADE_WIDTH * 0.3)) / ringWidth
         const fade = ringPos < 0.5 ? ringPos * 2 : (1 - ringPos) * 2
-        bestScrambleAlpha = Math.max(bestScrambleAlpha, fade * (0.15 + Math.random() * 0.25))
+        bestScrambleAlpha = Math.max(bestScrambleAlpha, fade * (0.3 + Math.random() * 0.5))
       }
     }
 
     if (inScrambleZone) {
       ctx.font = span.font
       ctx.textBaseline = 'top'
-      ctx.fillStyle = `rgba(0,255,65,${bestScrambleAlpha})`
+      ctx.fillStyle = `rgba(${theme.rgb},${bestScrambleAlpha})`
       ctx.fillText(scrambleString(span.originalText.length), span.x, span.y)
     }
   }
@@ -255,10 +277,10 @@ function renderCanvas(now: number): void {
         const ringPos = (dist - innerRadius) / (outerRadius - innerRadius)
         const ringFade = ringPos < 0.5 ? ringPos * 2 : (1 - ringPos) * 2
 
-        const alpha = ringFade * (0.1 + Math.random() * 0.25)
+        const alpha = ringFade * (0.2 + Math.random() * 0.5)
         if (alpha < 0.02) continue
 
-        ctx.fillStyle = `rgba(0,255,65,${alpha})`
+        ctx.fillStyle = `rgba(${theme.rgb},${alpha})`
         ctx.fillText(randomChar(), x, y)
       }
     }
@@ -295,9 +317,13 @@ function render(): void {
     for (const ripple of ripples) {
       const elapsed = (now - ripple.startTime) / 1000
       const radius = elapsed * RIPPLE_SPEED
-      const dist = Math.hypot(span.cx - ripple.originX, span.cy - ripple.originY)
+      const dx = span.cx - ripple.originX
+      const dy = span.cy - ripple.originY
+      const dist = Math.hypot(dx, dy)
+      const angle = Math.atan2(dy, dx)
+      const wobble = Math.sin(angle * WOBBLE_FREQ + span.wobbleSeed) * WOBBLE_AMP
 
-      const raw = Math.max(0, Math.min(1, (radius - dist + span.jitter) / FADE_WIDTH))
+      const raw = Math.max(0, Math.min(1, (radius - dist + span.jitter + wobble) / FADE_WIDTH))
       const reveal = raw * raw * (3 - 2 * raw)
       bestReveal = Math.max(bestReveal, reveal)
 
@@ -313,8 +339,12 @@ function render(): void {
     // --- Dissolve out (reverse ripple) ---
     let dissolveAlpha = 1
     if (dissolveOut) {
-      const dist = Math.hypot(span.cx - dissolveOut.originX, span.cy - dissolveOut.originY)
-      const raw = Math.max(0, Math.min(1, (dissolveOutRadius - dist + span.jitter) / FADE_WIDTH))
+      const ddx = span.cx - dissolveOut.originX
+      const ddy = span.cy - dissolveOut.originY
+      const dist = Math.hypot(ddx, ddy)
+      const angle = Math.atan2(ddy, ddx)
+      const wobble = Math.sin(angle * WOBBLE_FREQ + span.wobbleSeed) * WOBBLE_AMP
+      const raw = Math.max(0, Math.min(1, (dissolveOutRadius - dist + span.jitter + wobble) / FADE_WIDTH))
       const fade = raw * raw * (3 - 2 * raw)
       dissolveAlpha = 1 - fade
       anyRippleActive = true
@@ -325,17 +355,20 @@ function render(): void {
     if (finalAlpha >= 1 && !dissolveOut) {
       if (span.state !== 'revealed') {
         span.state = 'revealed'
-        span.element.style.color = REVEALED_COLOR
+        span.element.style.color = theme.revealed
+        span.element.style.textShadow = glowShadow()
       }
       span.revealed = 1
     } else if (finalAlpha > 0) {
       span.revealed = bestReveal
-      span.element.style.color = `rgba(0,255,65,${finalAlpha})`
+      span.element.style.color = `rgba(${theme.rgb},${finalAlpha})`
+      span.element.style.textShadow = glowShadow(finalAlpha * 0.4)
       allDone = false
     } else {
       if (span.state !== 'hidden') {
         span.state = 'hidden'
         span.element.style.color = 'transparent'
+        span.element.style.textShadow = 'none'
       }
       allDone = false
     }
@@ -349,7 +382,8 @@ function render(): void {
 
   if (allDone && !anyRippleActive && !dissolveOut) {
     for (const span of allSpans) {
-      span.element.style.color = REVEALED_COLOR
+      span.element.style.color = theme.revealed
+      span.element.style.textShadow = glowShadow()
     }
     canvas.style.display = 'none'
     animating = false
@@ -430,3 +464,79 @@ if (stored) {
   const { x, y } = JSON.parse(stored)
   requestAnimationFrame(() => addRipple(x, y))
 }
+
+// --- Theme picker ---
+
+function setActiveThemeSwatch(name: string): void {
+  document.querySelectorAll('.theme-swatch').forEach(s => s.classList.remove('active'))
+  document.querySelector(`.theme-swatch[data-swatch="${name}"]`)?.classList.add('active')
+}
+
+const savedTheme = localStorage.getItem('theme')
+if (savedTheme) {
+  document.documentElement.setAttribute('data-theme', savedTheme)
+  theme = getThemeColors()
+}
+setActiveThemeSwatch(savedTheme || 'matrix')
+
+document.querySelectorAll('.theme-swatch').forEach(swatch => {
+  swatch.addEventListener('click', (e) => {
+    e.stopPropagation()
+    const name = (swatch as HTMLElement).dataset.swatch!
+    const themeAttr = name === 'matrix' ? '' : name
+    if (themeAttr) {
+      document.documentElement.setAttribute('data-theme', themeAttr)
+      localStorage.setItem('theme', themeAttr)
+    } else {
+      document.documentElement.removeAttribute('data-theme')
+      localStorage.removeItem('theme')
+    }
+    theme = getThemeColors()
+    setActiveThemeSwatch(name)
+    for (const span of allSpans) {
+      if (span.state === 'revealed') {
+        span.element.style.color = theme.revealed
+        span.element.style.textShadow = glowShadow()
+      }
+    }
+  })
+})
+
+// --- Font picker ---
+
+function setActiveFontSwatch(name: string): void {
+  document.querySelectorAll('.font-swatch').forEach(s => s.classList.remove('active'))
+  document.querySelector(`.font-swatch[data-font="${name}"]`)?.classList.add('active')
+}
+
+const savedFont = localStorage.getItem('font')
+if (savedFont) {
+  document.documentElement.setAttribute('data-font', savedFont)
+}
+setActiveFontSwatch(savedFont || 'serif')
+
+document.querySelectorAll('.font-swatch').forEach(swatch => {
+  swatch.addEventListener('click', (e) => {
+    e.stopPropagation()
+    const name = (swatch as HTMLElement).dataset.font!
+    if (name === 'serif') {
+      document.documentElement.removeAttribute('data-font')
+      localStorage.removeItem('font')
+    } else {
+      document.documentElement.setAttribute('data-font', name)
+      localStorage.setItem('font', name)
+    }
+    setActiveFontSwatch(name)
+  })
+})
+
+// --- Nav active state ---
+
+document.querySelectorAll('.nav-links a').forEach(link => {
+  const href = (link as HTMLAnchorElement).getAttribute('href')!
+  const path = window.location.pathname.replace(/\/$/, '') || '/'
+  const linkPath = href.replace(/\/$/, '') || '/'
+  if (path === linkPath) {
+    link.classList.add('nav-active')
+  }
+})
