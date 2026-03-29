@@ -60,6 +60,7 @@ let allSpans: RevealSpan[] = []
 let ripples: Ripple[] = []
 let animating = false
 let textBounds = { top: 0, bottom: 0, left: 0, right: 0 }
+let lineYPositions: number[] = [] // unique Y (top) positions from DOM spans
 let dissolveOut: { originX: number; originY: number; startTime: number; href: string } | null = null
 
 // --- Canvas overlay ---
@@ -186,6 +187,35 @@ function computeTextBounds(): void {
     right = Math.max(right, span.cx + halfW)
   }
   textBounds = { top, bottom, left, right }
+
+  // Compute the most common line spacing, then build a uniform grid
+  // that covers the viewport + overshoot, aligned to the first text line
+  const ySet = new Set<number>()
+  for (const span of allSpans) {
+    if (span.isSpace) continue
+    ySet.add(Math.round(span.y))
+  }
+  const sortedYs = Array.from(ySet).sort((a, b) => a - b)
+
+  // Find the most common gap (the line height within paragraphs, not between them)
+  const gaps: number[] = []
+  for (let i = 1; i < sortedYs.length; i++) {
+    gaps.push(sortedYs[i]! - sortedYs[i - 1]!)
+  }
+  gaps.sort((a, b) => a - b)
+  const lineHeight = gaps.length > 0 ? gaps[Math.floor(gaps.length / 2)]! : GRID_Y
+
+  // Build a uniform grid from the first line position
+  lineYPositions = []
+  if (sortedYs.length > 0) {
+    const first = sortedYs[0]!
+    for (let y = first; y > -OVERSHOOT_RANGE; y -= lineHeight) {
+      lineYPositions.unshift(Math.round(y))
+    }
+    for (let y = first + lineHeight; y < window.innerHeight + OVERSHOOT_RANGE; y += lineHeight) {
+      lineYPositions.push(Math.round(y))
+    }
+  }
 }
 
 function distFromTextBounds(x: number, y: number): number {
@@ -250,13 +280,19 @@ function renderCanvas(now: number): void {
       ctx.font = span.font
       ctx.textBaseline = 'top'
       ctx.fillStyle = `rgba(${theme.rgb},${bestScrambleAlpha})`
-      ctx.fillText(scrambleString(span.originalText.length), span.x, span.y)
+      // Offset to match DOM text centering within line-height
+      const yOffset = (span.height - parseFloat(span.font)) / 2
+      ctx.fillText(scrambleString(span.originalText.length), span.x, span.y + yOffset)
     }
   }
 
   // Draw overshoot grid scramble
-  ctx.font = '18px Georgia, serif'
+  const fontSize = 17
+  const gridFont = `${fontSize}px ${getComputedStyle(document.documentElement).getPropertyValue('--font').trim()}`
+  ctx.font = gridFont
   ctx.textBaseline = 'top'
+  // Match DOM line-height centering: 17px/1.75 = 29.75px line box
+  const gridYOffset = (fontSize * 1.75 - fontSize) / 2
 
   for (const ripple of ripples) {
     const elapsed = (now - ripple.startTime) / 1000
@@ -266,22 +302,29 @@ function renderCanvas(now: number): void {
 
     const minX = Math.max(0, Math.floor((ripple.originX - outerRadius) / GRID_X) * GRID_X)
     const maxX = Math.min(vw, Math.ceil((ripple.originX + outerRadius) / GRID_X) * GRID_X)
-    const minY = Math.max(0, Math.floor((ripple.originY - outerRadius) / GRID_Y) * GRID_Y)
-    const maxY = Math.min(vh, Math.ceil((ripple.originY + outerRadius) / GRID_Y) * GRID_Y)
 
-    for (let y = minY; y < maxY; y += GRID_Y) {
+    // Fade out near viewport edges
+    const edgeFadeStart = Math.min(vw, vh) * 0.55
+
+    for (const y of lineYPositions) {
+      if (y < 0 || y > vh - 30) continue
+      if (y < ripple.originY - outerRadius || y > ripple.originY + outerRadius) continue
       for (let x = minX; x < maxX; x += GRID_X) {
         const dist = Math.hypot(x - ripple.originX, y - ripple.originY)
         if (dist < innerRadius || dist > outerRadius) continue
 
+        // Distance from nearest edge
+        const edgeDist = Math.min(x, y, vw - x, vh - y)
+        const edgeFade = Math.min(1, edgeDist / edgeFadeStart)
+
         const ringPos = (dist - innerRadius) / (outerRadius - innerRadius)
         const ringFade = ringPos < 0.5 ? ringPos * 2 : (1 - ringPos) * 2
 
-        const alpha = ringFade * (0.2 + Math.random() * 0.5)
+        const alpha = ringFade * edgeFade * (0.2 + Math.random() * 0.5)
         if (alpha < 0.02) continue
 
         ctx.fillStyle = `rgba(${theme.rgb},${alpha})`
-        ctx.fillText(randomChar(), x, y)
+        ctx.fillText(randomChar(), x, y + gridYOffset)
       }
     }
   }
@@ -426,7 +469,7 @@ document.addEventListener('click', (e) => {
         return
       }
       e.preventDefault()
-      sessionStorage.setItem('ripple', JSON.stringify({ x: e.clientX, y: e.clientY }))
+      sessionStorage.setItem('ripple', JSON.stringify({ x: e.clientX, y: e.clientY, t: Date.now() }))
       dissolveOut = {
         originX: e.clientX,
         originY: e.clientY,
@@ -461,8 +504,15 @@ setup()
 const stored = sessionStorage.getItem('ripple')
 if (stored) {
   sessionStorage.removeItem('ripple')
-  const { x, y } = JSON.parse(stored)
-  requestAnimationFrame(() => addRipple(x, y))
+  const { x, y, t } = JSON.parse(stored)
+  // Backdate the ripple to account for navigation time
+  const elapsed = t ? Date.now() - t : 0
+  ripples.push({
+    originX: x,
+    originY: y,
+    startTime: performance.now() - elapsed,
+  })
+  startAnimation()
 }
 
 // --- Theme picker ---

@@ -5,6 +5,8 @@ a, a:visited, a:active { color: inherit; text-decoration: none; }
 [data-theme="amber"] { --bg: #1a1510; --fg: #ff8c00; --fg-rgb: 255,140,0; }
 [data-theme="cyan"] { --bg: #f0f4f8; --fg: #0055aa; --fg-rgb: 0,85,170; }
 [data-theme="bone"] { --bg: #fffff0; --fg: #2a2420; --fg-rgb: 42,36,32; }
+[data-theme="cerulean"] { --bg: #2a7ab5; --fg: #f0ece4; --fg-rgb: 240,236,228; }
+[data-theme="jungle"] { --bg: #1a2e1a; --fg: #ff6a1a; --fg-rgb: 255,106,26; }
 [data-font="sans"] { --font: 'Inter', sans-serif; }
 [data-font="mono"] { --font: 'JetBrains Mono', monospace; }
 [data-font="pixel"] { --font: 'Silkscreen', cursive; }
@@ -147,6 +149,8 @@ p:last-child { margin-bottom: 0; }
 .theme-swatch[data-swatch="amber"] { background: #ff8c00; }
 .theme-swatch[data-swatch="cyan"] { background: #0055aa; }
 .theme-swatch[data-swatch="bone"] { background: #2a2420; }
+.theme-swatch[data-swatch="cerulean"] { background: #2a7ab5; }
+.theme-swatch[data-swatch="jungle"] { background: #1a2e1a; }
 
 .font-swatch {
   font-size: 10px;
